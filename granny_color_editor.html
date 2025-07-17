@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <meta charset="UTF-8">
+  <title>Editor de Grannys en la Cuadrícula</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f0f0;
+      margin: 0;
+      padding: 20px;
+    }
+    .controls {
+      margin-bottom: 20px;
+    }
+    input[type="number"] {
+      width: 60px;
+    }
+    input[readonly] {
+      background-color: #eee;
+    }
+    .grid-wrapper {
+      overflow: hidden;
+      border: 1px solid #ccc;
+      display: inline-block;
+      transform-origin: top left;
+    }
+    .grid {
+      display: grid;
+      background-color: #ffffff;
+      grid-auto-rows: 1fr;
+    }
+    .cell {
+      position: relative;
+      background-color: transparent;
+      aspect-ratio: 1 / 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .cell > svg {
+      max-width: 100%;
+      max-height: 100%;
+    }
+    .granny {
+      width: 100%;
+      height: 100%;
+    }
+    .cell.selected {
+      outline: 2px solid #00aaff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Editor de Grannys en la Cuadrícula</h1>
+  <div class="controls">
+    <h2>Formas de Granny</h2>
+<table border="1" id="shapeTable">
+  <thead>
+    <tr>
+      <th>Nombre forma</th>
+      <th>Forma</th>
+      <th>Paleta de colores</th>
+      <th>Acciones</th>
+    </tr>
+  </thead>
+  <tbody id="shapeBody"></tbody>
+</table>
+<button onclick="addGrannyShape()">Agregar combinación de forma</button>
+<input type="file" accept=".svg" id="svgFileInput" style="display:none" onchange="uploadGrannyShape(event)">
+
+    <label>Ancho (grannys): <input type="number" id="gridWidth" value="10" min="1"></label>
+    <label>Alto (grannys): <input type="number" id="gridHeight" value="5" min="1"></label>
+    <label>Granny (cm): <input type="number" id="grannySizeCm" value="10" min="1" onchange="updateDimensions()"></label>
+    <label>Total Ancho (cm): <input type="number" id="widthCm" readonly></label>
+    <label>Total Alto (cm): <input type="number" id="heightCm" readonly></label>
+    <label>Escala Granny: <input type="number" id="grannyScale" value="1" min="1"></label>
+    <label>Espacio columnas (px): <input type="number" id="gapX" value="4" min="0" onchange="updateGridSize()"></label>
+    <label>Espacio filas (px): <input type="number" id="gapY" value="4" min="0" onchange="updateGridSize()"></label>
+    <br><br>
+    <label>Centro: <input type="color" id="colorCenter" value="#C19A33"></label>
+    <label>Pétalos: <input type="color" id="colorPetals" value="#F3EADA"></label>
+    <label>Fondo Flor: <input type="color" id="colorBackgroundFlower" value="#B16E5A"></label>
+    <label>Borde Cuadro: <input type="color" id="colorSquareBorder" value="#5E7D7E"></label>
+    <label>Fondo General: <input type="color" id="colorBackground" value="#ffffff" onchange="updateBackground()"></label>
+    <br><br>
+    <button onclick="updateGridSize()">Actualizar Grid</button>
+    <button onclick="zoom(1.1)">Zoom +</button>
+    <button onclick="zoom(0.9)">Zoom -</button>
+    <button onclick="undo()">↶ Deshacer</button>
+    <button onclick="redo()">↷ Rehacer</button>
+    <button onclick="exportAsImage()">Exportar Imagen</button>
+    <button onclick="exportAsJSON()">Guardar JSON</button>
+    <input type="file" accept=".json" onchange="importFromFile(event)">
+    <br><br>
+    <button onclick="applyScaleToSelection()">Aplicar escala a selección</button>
+    <button onclick="applyColorToSelection()">Aplicar color a selección</button>
+    <button onclick="randomScaleGrid()">Escalar Grid Aleatorio</button>
+  </div>
+  <div class="grid-wrapper" id="gridWrapper">
+    <div class="grid" id="gridContainer"></div>
+  </div>
+<script>
+const gridContainer = document.getElementById('gridContainer');
+const gridWrapper = document.getElementById('gridWrapper');
+let undoStack = [], redoStack = [];
+let zoomLevel = 1;
+
+// Paleta de colores inicial
+let palettes = [
+  {
+    center: "#C19A33",
+    petals: "#F3EADA",
+    backgroundFlower: "#B16E5A",
+    squareBorder: "#5E7D7E",
+    locked: true
+  }
+];
+
+// Agrega el SVG "Flor" como opción principal
+const grannySVGs = {
+  "Flor": `<svg viewBox="0 0 300 300" class="granny">
+    <rect x="0" y="0" width="300" height="300" fill="#5E7D7E"/>
+    <circle cx="150" cy="150" r="70" fill="#B16E5A"/>
+    ${Array.from({ length: 8 }).map((_, i) => {
+      const angle = i * 45;
+      const rad = angle * Math.PI / 180;
+      const x = 150 + 40 * Math.cos(rad);
+      const y = 150 + 40 * Math.sin(rad);
+      return `<ellipse cx="${x}" cy="${y}" rx="12" ry="22" fill="#F3EADA" transform="rotate(${angle},${x},${y})" />`;
+    }).join('')}
+    <circle cx="150" cy="150" r="12" fill="#C19A33" />
+  </svg>`,
+  "Circular": `<svg viewBox="0 0 300 300" class="granny">
+    <rect x="0" y="0" width="300" height="300" fill="#5E7D7E"/>
+    <circle cx="150" cy="150" r="120" fill="#F3EADA"/>
+    <circle cx="150" cy="150" r="70" fill="#B16E5A"/>
+    <circle cx="150" cy="150" r="25" fill="#C19A33"/>
+  </svg>`,
+  "Estrella": `<svg viewBox="0 0 300 300" class="granny">
+    <rect x="0" y="0" width="300" height="300" fill="#5E7D7E"/>
+    <polygon points="150,40 170,120 250,120 185,170 210,250 150,200 90,250 115,170 50,120 130,120"
+      fill="#F3EADA" stroke="#C19A33" stroke-width="8"/>
+    <circle cx="150" cy="150" r="25" fill="#B16E5A"/>
+  </svg>`,
+  "Diamante": `<svg viewBox="0 0 300 300" class="granny">
+    <rect x="0" y="0" width="300" height="300" fill="#B16E5A"/>
+    <polygon points="150,50 250,150 150,250 50,150" fill="#F3EADA" stroke="#C19A33" stroke-width="8"/>
+    <circle cx="150" cy="150" r="30" fill="#5E7D7E"/>
+  </svg>`,
+  "Flor Simple": `<svg viewBox="0 0 300 300" class="granny">
+    <rect x="0" y="0" width="300" height="300" fill="#F3EADA"/>
+    <circle cx="150" cy="150" r="70" fill="#B16E5A"/>
+    <circle cx="150" cy="90" r="25" fill="#C19A33"/>
+    <circle cx="210" cy="150" r="25" fill="#C19A33"/>
+    <circle cx="150" cy="210" r="25" fill="#C19A33"/>
+    <circle cx="90" cy="150" r="25" fill="#C19A33"/>
+    <circle cx="150" cy="150" r="20" fill="#5E7D7E"/>
+  </svg>`,
+  "Hexágono": `<svg viewBox="0 0 300 300" class="granny">
+    <polygon points="75,150 150,75 225,150 225,225 150,300 75,225" fill="#F3EADA" stroke="#C19A33" stroke-width="8"/>
+    <circle cx="150" cy="150" r="40" fill="#B16E5A"/>
+    <rect x="0" y="0" width="300" height="300" fill="none"/>
+  </svg>`,
+  "Triángulo": `<svg viewBox="0 0 300 300" class="granny">
+    <polygon points="150,50 250,250 50,250" fill="#F3EADA" stroke="#C19A33" stroke-width="8"/>
+    <circle cx="150" cy="150" r="40" fill="#B16E5A"/>
+    <rect x="0" y="0" width="300" height="300" fill="none"/>
+  </svg>`,
+  "Cuadrado": `<svg viewBox="0 0 300 300" class="granny">
+    <rect x="50" y="50" width="200" height="200" fill="#F3EADA" stroke="#C19A33" stroke-width="8"/>
+    <circle cx="150" cy="150" r="40" fill="#B16E5A"/>
+    <rect x="0" y="0" width="300" height="300" fill="none"/>
+  </svg>`
+};
+
+// Inicializa el primer granny con "Flor"
+let grannyShapes = [
+  {
+    name: "Flor",
+    svg: grannySVGs["Flor"],
+    palettes: [
+      {
+        colors: { ...palettes[0] },
+        coords: getAllCoords(),
+        locked: true
+      }
+    ]
+  }
+];
+
+// Devuelve todos los cuadros del grid actual
+function getAllCoords() {
+  const gridWidth = parseInt(document.getElementById('gridWidth').value);
+  const gridHeight = parseInt(document.getElementById('gridHeight').value);
+  let coords = [];
+  for (let r = 0; r < gridHeight; r++) {
+    for (let c = 0; c < gridWidth; c++) {
+      coords.push([r, c]);
+    }
+  }
+  return coords;
+}
+
+// Renderiza la tabla de formas
+function renderShapeTable() {
+  const shapeBody = document.getElementById('shapeBody');
+  shapeBody.innerHTML = '';
+  grannyShapes.forEach((shape, shapeIdx) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${shape.name}</td>
+      <td>
+        <select onchange="changeGrannySVG(${shapeIdx}, this.value)">
+          <option value="Flor" ${shape.svg === grannySVGs["Flor"] ? "selected" : ""}>Flor</option>
+          <option value="Circular" ${shape.svg === grannySVGs["Circular"] ? "selected" : ""}>Circular</option>
+          <option value="Flor Simple" ${shape.svg === grannySVGs["Flor Simple"] ? "selected" : ""}>Flor Simple</option>
+          <option value="Estrella" ${shape.svg === grannySVGs["Estrella"] ? "selected" : ""}>Estrella</option>
+          <option value="Diamante" ${shape.svg === grannySVGs["Diamante"] ? "selected" : ""}>Diamante</option>
+          <option value="Hexágono" ${shape.svg === grannySVGs["Hexágono"] ? "selected" : ""}>Hexágono</option>
+          <option value="Triángulo" ${shape.svg === grannySVGs["Triángulo"] ? "selected" : ""}>Triángulo</option>
+          <option value="Cuadrado" ${shape.svg === grannySVGs["Cuadrado"] ? "selected" : ""}>Cuadrado</option>
+        </select>
+        <div class="svg-preview">${shape.svg}</div>
+      </td>
+      <td>${renderPalettesTable(shape.palettes, shapeIdx)}</td>
+      <td>
+        <button onclick="addPaletteToGrannyShape(${shapeIdx})">Agregar paleta</button>
+        ${shapeIdx > 0 ? `<button onclick="deleteGrannyShape(${shapeIdx})">Eliminar forma</button>` : ''}
+      </td>
+    `;
+    shapeBody.appendChild(row);
+  });
+}
+
+function changeGrannySVG(shapeIdx, svgName) {
+  grannyShapes[shapeIdx].svg = grannySVGs[svgName];
+  // Actualiza todos los cuadros asociados de todas las paletas de la forma
+  grannyShapes[shapeIdx].palettes.forEach(pal => {
+    pal.coords.forEach(([row, col]) => {
+      const cell = gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`);
+      if (cell) {
+        cell.innerHTML = grannySVGs[svgName];
+      }
+    });
+  });
+  renderShapeTable();
+}
+
+function renderPalettesTable(palettes, shapeIdx) {
+  let html = `<table border="1" style="margin-bottom:4px;">
+    <thead>
+      <tr>
+        <th>Color 1</th>
+        <th>Color 2</th>
+        <th>Color 3</th>
+        <th>Color 4</th>
+        <th>Cuadros Asociados</th>
+        <th>Acciones</th>
+      </tr>
+    </thead>
+    <tbody>`;
+  palettes.forEach((pal, palIdx) => {
+    const coordsStr = pal.coords.map(([r, c]) => `(${r},${c})`).join(', ');
+    html += `<tr>
+      <td><input type="color" value="${pal.colors.center}" onchange="editPaletteColor(${shapeIdx},${palIdx},'center',this.value)"></td>
+      <td><input type="color" value="${pal.colors.petals}" onchange="editPaletteColor(${shapeIdx},${palIdx},'petals',this.value)"></td>
+      <td><input type="color" value="${pal.colors.backgroundFlower}" onchange="editPaletteColor(${shapeIdx},${palIdx},'backgroundFlower',this.value)"></td>
+      <td><input type="color" value="${pal.colors.squareBorder}" onchange="editPaletteColor(${shapeIdx},${palIdx},'squareBorder',this.value)"></td>
+      <td>${coordsStr}</td>
+      <td>
+        <button onclick="reorderPaletteColors(${shapeIdx},${palIdx})">Reordenar Colores</button>
+        <button onclick="selectPaletteCells(${shapeIdx},${palIdx}, event)">Seleccionar</button>
+        ${pal.locked ? '' : `<button onclick="deletePaletteFromShape(${shapeIdx},${palIdx})">Eliminar</button>`}
+      </td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+// Selecciona los cuadros asociados a una paleta
+function selectPaletteCells(shapeIdx, palIdx, event) {
+  const pal = grannyShapes[shapeIdx].palettes[palIdx];
+  const cells = pal.coords.map(([row, col]) =>
+    gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`)
+  );
+  // Si Ctrl está presionado, mantiene la selección anterior y agrega los nuevos cuadros
+  if (!event.ctrlKey) {
+    document.querySelectorAll('.cell.selected').forEach(c => c.classList.remove('selected'));
+  }
+  cells.forEach(cell => {
+    if (cell) cell.classList.add('selected');
+  });
+}
+
+// Edita color de una paleta
+function editPaletteColor(shapeIdx, palIdx, key, value) {
+  grannyShapes[shapeIdx].palettes[palIdx].colors[key] = value;
+  // No actualices la forma principal (no cambies grannyShapes[shapeIdx].svg)
+  renderShapeTable();
+  updateAssociatedCells(shapeIdx, palIdx);
+}
+
+function reorderPaletteColors(shapeIdx, palIdx) {
+  const pal = grannyShapes[shapeIdx].palettes[palIdx];
+  const keys = ['center', 'petals', 'backgroundFlower', 'squareBorder'];
+  const values = keys.map(k => pal.colors[k]);
+  for (let i = values.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [values[i], values[j]] = [values[j], values[i]];
+  }
+  keys.forEach((k, i) => pal.colors[k] = values[i]);
+  // No actualices la forma (SVG principal)
+  renderShapeTable();
+  updateAssociatedCells(shapeIdx, palIdx); // <-- Asegura que los cuadros se actualicen
+}
+
+// Actualiza los cuadros asociados con los colores de la paleta
+function updateAssociatedCells(shapeIdx, palIdx) {
+  const pal = grannyShapes[shapeIdx].palettes[palIdx];
+  const shape = grannyShapes[shapeIdx];
+  pal.coords.forEach(([row, col]) => {
+    const cell = gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`);
+    if (cell) {
+      // Usa el SVG de la forma actual, pero con los colores de la paleta
+      cell.innerHTML = svgTemplate(pal.colors, shape.svg);
+    }
+  });
+}
+
+// Elimina una paleta de una forma
+function deletePaletteFromShape(shapeIdx, palIdx) {
+  // Guarda los cuadros asociados que serán liberados
+  const releasedCoords = grannyShapes[shapeIdx].palettes[palIdx].coords;
+
+  // Elimina la paleta
+  grannyShapes[shapeIdx].palettes.splice(palIdx, 1);
+
+  // Agrega los cuadros liberados a la forma inicial (índice 0)
+  releasedCoords.forEach(([row, col]) => {
+    // Evita duplicados
+    if (!grannyShapes[0].palettes[0].coords.some(coord => coord[0] === row && coord[1] === col)) {
+      grannyShapes[0].palettes[0].coords.push([row, col]);
+    }
+    // Actualiza el color en el grid al color inicial
+    const cell = gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`);
+    if (cell) {
+      cell.innerHTML = svgTemplate(grannyShapes[0].palettes[0].colors);
+    }
+  });
+
+  renderShapeTable();
+}
+
+// Agrega una paleta a una forma
+function addPaletteToGrannyShape(shapeIdx) {
+  // Obtiene los cuadros seleccionados
+  const selectedCells = [...document.querySelectorAll('.cell.selected')];
+  if (selectedCells.length === 0) {
+    alert("Selecciona al menos un cuadro para agregar la paleta.");
+    return;
+  }
+  // Obtiene las coordenadas seleccionadas
+  const selectedCoords = selectedCells.map(cell => [parseInt(cell.dataset.row), parseInt(cell.dataset.col)]);
+
+  // Elimina las coordenadas seleccionadas de todas las demás paletas de todas las formas
+  grannyShapes.forEach(shape => {
+    shape.palettes.forEach(pal => {
+      pal.coords = pal.coords.filter(coord =>
+        !selectedCoords.some(sel => sel[0] === coord[0] && sel[1] === coord[1])
+      );
+    });
+  });
+
+  // Agrega la nueva paleta con los cuadros seleccionados
+  grannyShapes[shapeIdx].palettes.push({
+    colors: getColors(),
+    coords: selectedCoords,
+    locked: false
+  });
+
+  // Deselecciona los cuadros
+  selectedCells.forEach(cell => cell.classList.remove('selected'));
+  renderShapeTable();
+}
+
+// Elimina una forma (excepto la inicial)
+function deleteGrannyShape(shapeIdx) {
+  // No eliminar la forma inicial
+  if (shapeIdx === 0) return;
+
+  // Junta todos los cuadros asociados en todas las paletas de la forma a eliminar
+  const releasedCoords = [];
+  grannyShapes[shapeIdx].palettes.forEach(pal => {
+    releasedCoords.push(...pal.coords);
+  });
+
+  // Elimina la forma
+  grannyShapes.splice(shapeIdx, 1);
+
+  // Agrega los cuadros liberados a la forma inicial (índice 0)
+  releasedCoords.forEach(([row, col]) => {
+    if (!grannyShapes[0].palettes[0].coords.some(coord => coord[0] === row && coord[1] === col)) {
+      grannyShapes[0].palettes[0].coords.push([row, col]);
+    }
+    // Actualiza el color en el grid al color inicial
+    const cell = gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`);
+    if (cell) {
+      cell.innerHTML = svgTemplate(grannyShapes[0].palettes[0].colors);
+    }
+  });
+
+  renderShapeTable();
+}
+
+// SVG dinámico para granny
+function svgTemplate(colors, svgBase) {
+  // Si se pasa un SVG base, reemplaza los colores en el SVG
+  if (svgBase) {
+    return svgBase
+      .replace(/fill="#C19A33"/g, `fill="${colors.center}"`)
+      .replace(/stroke="#C19A33"/g, `stroke="${colors.center}"`) // <-- Añadido para la estrella
+      .replace(/fill="#F3EADA"/g, `fill="${colors.petals}"`)
+      .replace(/fill="#B16E5A"/g, `fill="${colors.backgroundFlower}"`)
+      .replace(/fill="#5E7D7E"/g, `fill="${colors.squareBorder}"`);
+  }
+  // SVG dinámico por defecto (Flor Simple)
+  return `
+    <svg viewBox="0 0 300 300" class="granny">
+      <rect x="0" y="0" width="300" height="300" fill="${colors.squareBorder}" />
+      <circle cx="150" cy="150" r="70" fill="${colors.backgroundFlower}" />
+      ${Array.from({ length: 8 }).map((_, i) => {
+        const angle = i * 45;
+        const rad = angle * Math.PI / 180;
+        const x = 150 + 40 * Math.cos(rad);
+        const y = 150 + 40 * Math.sin(rad);
+        return `<ellipse cx="${x}" cy="${y}" rx="12" ry="22" fill="${colors.petals}" transform="rotate(${angle},${x},${y})" />`;
+      }).join('')}
+      <circle cx="150" cy="150" r="12" fill="${colors.center}" />
+    </svg>`;
+}
+
+// Utilidades de color
+function getColors() {
+  return {
+    center: document.getElementById('colorCenter').value,
+    petals: document.getElementById('colorPetals').value,
+    backgroundFlower: document.getElementById('colorBackgroundFlower').value,
+    squareBorder: document.getElementById('colorSquareBorder').value
+  };
+}
+
+function setColors(colors) {
+  document.getElementById('colorCenter').value = colors.center;
+  document.getElementById('colorPetals').value = colors.petals;
+  document.getElementById('colorBackgroundFlower').value = colors.backgroundFlower;
+  document.getElementById('colorSquareBorder').value = colors.squareBorder;
+}
+
+// Grid y celdas
+function attachCellListeners(cell) {
+  if (!window._excelSelect) {
+    window._excelSelect = {
+      isSelecting: false,
+      startCell: null,
+      keepSelection: false
+    };
+  }
+
+  cell.addEventListener('mousedown', (e) => {
+    // Si el cuadro ya está seleccionado y no hay modificadores, lo deselecciona y termina el proceso
+    if (cell.classList.contains('selected') && !e.ctrlKey && !e.shiftKey) {
+      cell.classList.remove('selected');
+      window._excelSelect.isSelecting = false;
+      window._excelSelect.startCell = null;
+      window._excelSelect.keepSelection = false;
+      return;
+    }
+
+    window._excelSelect.isSelecting = true;
+    window._excelSelect.startCell = cell;
+    window._excelSelect.keepSelection = e.ctrlKey || e.shiftKey;
+
+    if (!window._excelSelect.keepSelection) {
+      document.querySelectorAll('.cell.selected').forEach(c => c.classList.remove('selected'));
+    }
+    cell.classList.add('selected');
+  });
+
+  cell.addEventListener('mouseup', (e) => {
+    window._excelSelect.isSelecting = false;
+    window._excelSelect.startCell = null;
+    window._excelSelect.keepSelection = false;
+  });
+
+  cell.addEventListener('mouseenter', (e) => {
+    if (window._excelSelect.isSelecting && window._excelSelect.startCell && !e.shiftKey) {
+      const startRow = parseInt(window._excelSelect.startCell.dataset.row);
+      const startCol = parseInt(window._excelSelect.startCell.dataset.col);
+      const endRow = parseInt(cell.dataset.row);
+      const endCol = parseInt(cell.dataset.col);
+
+      const minRow = Math.min(startRow, endRow);
+      const maxRow = Math.max(startRow, endRow);
+      const minCol = Math.min(startCol, endCol);
+      const maxCol = Math.max(startCol, endCol);
+
+      document.querySelectorAll('.cell').forEach(c => {
+        const r = parseInt(c.dataset.row);
+        const col = parseInt(c.dataset.col);
+        if (r >= minRow && r <= maxRow && col >= minCol && col <= maxCol) {
+          c.classList.add('selected');
+        } else if (!window._excelSelect.keepSelection) {
+          c.classList.remove('selected');
+        }
+      });
+    }
+  });
+}
+
+function renderGrid() {
+  gridContainer.innerHTML = '';
+  const gridWidth = parseInt(document.getElementById('gridWidth').value);
+  const gridHeight = parseInt(document.getElementById('gridHeight').value);
+  const gapX = parseInt(document.getElementById('gapX').value);
+  const gapY = parseInt(document.getElementById('gapY').value);
+  gridContainer.style.gridTemplateColumns = `repeat(${gridWidth}, 1fr)`;
+  gridContainer.style.columnGap = `${gapX}px`;
+  gridContainer.style.rowGap = `${gapY}px`;
+
+  const colors = getColors();
+  for (let row = 0; row < gridHeight; row++) {
+    for (let col = 0; col < gridWidth; col++) {
+      const div = document.createElement('div');
+      div.className = 'cell';
+      div.style.gridColumn = `span 1`;
+      div.style.gridRow = `span 1`;
+      div.dataset.row = row;
+      div.dataset.col = col;
+      div.innerHTML = svgTemplate(colors);
+      attachCellListeners(div);
+      gridContainer.appendChild(div);
+    }
+  }
+  updateDimensions();
+  updateBackground();
+  saveState();
+}
+
+function updateColors() {
+  const colors = getColors();
+  document.querySelectorAll('.cell').forEach(cell => {
+    cell.innerHTML = svgTemplate(colors);
+  });
+}
+
+function updateBackground() {
+  const bg = document.getElementById('colorBackground').value;
+  gridContainer.style.backgroundColor = bg;
+}
+
+function applyScaleToSelection() {
+  const scale = parseInt(document.getElementById('grannyScale').value);
+  const selected = [...document.querySelectorAll('.cell.selected')];
+  if (selected.length === 0 || scale < 1) return;
+  saveState();
+  applyScaleToCells(selected, scale);
+}
+
+function applyScaleToCells(cells, scale) {
+  cells.forEach(cell => {
+    const row = parseInt(cell.dataset.row);
+    const col = parseInt(cell.dataset.col);
+    for (let r = 0; r < scale; r++) {
+      for (let c = 0; c < scale; c++) {
+        if (r === 0 && c === 0) continue;
+        const target = gridContainer.querySelector(`.cell[data-row='${row + r}'][data-col='${col + c}']`);
+        if (target) target.remove();
+      }
+    }
+    cell.style.gridColumn = `span ${scale}`;
+    cell.style.gridRow = `span ${scale}`;
+    cell.classList.remove('selected');
+  });
+}
+
+function applyColorToSelection() {
+  const selected = [...document.querySelectorAll('.cell.selected')];
+  if (selected.length === 0) return;
+  saveState();
+  const colors = getColors();
+  selected.forEach(cell => {
+    cell.innerHTML = svgTemplate(colors);
+    cell.classList.remove('selected');
+  });
+}
+
+function updateDimensions() {
+  const width = parseInt(document.getElementById('gridWidth').value);
+  const height = parseInt(document.getElementById('gridHeight').value);
+  const size = parseFloat(document.getElementById('grannySizeCm').value);
+  document.getElementById('widthCm').value = (width * size).toFixed(2);
+  document.getElementById('heightCm').value = (height * size).toFixed(2);
+}
+
+function zoom(factor) {
+  zoomLevel *= factor;
+  gridWrapper.style.transform = `scale(${zoomLevel})`;
+}
+
+function exportAsImage() {
+  html2canvas(gridWrapper).then(canvas => {
+    const link = document.createElement('a');
+    link.download = 'granny_design.png';
+    link.href = canvas.toDataURL();
+    link.click();
+  });
+}
+
+function exportAsJSON() {
+  const data = {
+    html: gridContainer.innerHTML,
+    gridWidth: parseInt(document.getElementById('gridWidth').value),
+    gridHeight: parseInt(document.getElementById('gridHeight').value),
+    colors: getColors()
+  };
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'granny_design.json';
+  link.click();
+}
+
+function importFromFile(e) {
+  const file = e.target.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    const data = JSON.parse(reader.result);
+    gridContainer.innerHTML = data.html;
+    document.getElementById('gridWidth').value = data.gridWidth;
+    document.getElementById('gridHeight').value = data.gridHeight;
+    setColors(data.colors);
+    updateDimensions();
+    updateBackground();
+    attachListenersToAllCells();
+  };
+  reader.readAsText(file);
+}
+
+function updateGridSize() {
+  renderGrid();
+}
+
+function saveState() {
+  const state = {
+    html: gridContainer.innerHTML,
+    colors: getColors()
+  };
+  undoStack.push(JSON.stringify(state));
+  redoStack = [];
+}
+
+function undo() {
+  if (undoStack.length > 0) {
+    const current = {
+      html: gridContainer.innerHTML,
+      colors: getColors()
+    };
+    redoStack.push(JSON.stringify(current));
+    const state = JSON.parse(undoStack.pop());
+    gridContainer.innerHTML = state.html;
+    setColors(state.colors);
+    updateColors();
+    attachListenersToAllCells();
+    redoStack = redoStack.slice(-100);
+  }
+}
+
+function redo() {
+  if (redoStack.length > 0) {
+    const current = {
+      html: gridContainer.innerHTML,
+      colors: getColors()
+    };
+    undoStack.push(JSON.stringify(current));
+    const state = JSON.parse(redoStack.pop());
+    gridContainer.innerHTML = state.html;
+    setColors(state.colors);
+    updateColors();
+    attachListenersToAllCells();
+  }
+}
+
+function attachListenersToAllCells() {
+  const cells = document.querySelectorAll('.cell');
+  cells.forEach(cell => attachCellListeners(cell));
+}
+
+document.getElementById('colorCenter').addEventListener('change', () => { saveState(); updateColors(); });
+document.getElementById('colorPetals').addEventListener('change', () => { saveState(); updateColors(); });
+document.getElementById('colorBackgroundFlower').addEventListener('change', () => { saveState(); updateColors(); });
+document.getElementById('colorSquareBorder').addEventListener('change', () => { saveState(); updateColors(); });
+
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'z') undo();
+  if (e.ctrlKey && e.key === 'y') redo();
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderGrid();
+  renderShapeTable();
+});
+document.getElementById('gridWidth').addEventListener('change', () => {
+  renderShapeTable();
+});
+document.getElementById('gridHeight').addEventListener('change', () => {
+  renderShapeTable();
+});
+function addGrannyShape() {
+  // Obtiene los cuadros seleccionados
+  const selectedCells = [...document.querySelectorAll('.cell.selected')];
+  if (selectedCells.length === 0) {
+    alert("Selecciona al menos un cuadro para agregar la nueva combinación de forma.");
+    return;
+  }
+  const name = prompt("Nombre de la nueva forma:");
+  if (!name) return;
+
+  // Obtiene las coordenadas seleccionadas
+  const selectedCoords = selectedCells.map(cell => [parseInt(cell.dataset.row), parseInt(cell.dataset.col)]);
+
+  // Elimina las coordenadas seleccionadas de todas las demás paletas de todas las formas
+  grannyShapes.forEach(shape => {
+    shape.palettes.forEach(pal => {
+      pal.coords = pal.coords.filter(coord =>
+        !selectedCoords.some(sel => sel[0] === coord[0] && sel[1] === coord[1])
+      );
+    });
+  });
+
+  // Agrega la nueva forma con los cuadros seleccionados
+  grannyShapes.push({
+    name: name,
+    svg: grannySVGs["Flor Simple"],
+    palettes: [
+      {
+        colors: getColors(),
+        coords: selectedCoords,
+        locked: false
+      }
+    ]
+  });
+
+  // Deselecciona los cuadros
+  selectedCells.forEach(cell => cell.classList.remove('selected'));
+  renderShapeTable();
+}
+
+// Función para escalar cuadros aleatorios en el grid
+function randomScaleGrid() {
+  renderGrid(); // Limpia el grid antes de escalar
+  const gridWidth = parseInt(document.getElementById('gridWidth').value);
+  const gridHeight = parseInt(document.getElementById('gridHeight').value);
+  const sizes = [4, 2]; // Primero coloca los grandes, luego los medianos
+  const used = Array.from({ length: gridHeight }, () => Array(gridWidth).fill(false));
+
+  sizes.forEach(scale => {
+    const maxRow = gridHeight - scale + 1;
+    const maxCol = gridWidth - scale + 1;
+    let attempts = Math.floor((gridWidth * gridHeight) / (scale * scale)) * 2; // Más intentos para mejor distribución
+
+    while (attempts > 0) {
+      const row = Math.floor(Math.random() * maxRow);
+      const col = Math.floor(Math.random() * maxCol);
+
+      // Verifica que el área esté completamente libre y dentro del grid
+      let canPlace = true;
+      for (let r = 0; r < scale; r++) {
+        for (let c = 0; c < scale; c++) {
+          if (
+            row + r >= gridHeight ||
+            col + c >= gridWidth ||
+            used[row + r][col + c]
+          ) {
+            canPlace = false;
+            break;
+          }
+        }
+        if (!canPlace) break;
+      }
+
+      if (canPlace) {
+        // Marca el área como usada
+        for (let r = 0; r < scale; r++) {
+          for (let c = 0; c < scale; c++) {
+            used[row + r][col + c] = true;
+            // Oculta los cuadros que serán cubiertos por el cuadro grande, excepto el principal
+            if (!(r === 0 && c === 0)) {
+              const cellToHide = gridContainer.querySelector(`.cell[data-row='${row + r}'][data-col='${col + c}']`);
+              if (cellToHide) cellToHide.style.display = "none";
+            }
+          }
+        }
+        // Encuentra el div principal y escálalo
+        const cell = gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`);
+        if (cell) {
+          cell.style.gridColumn = `span ${scale}`;
+          cell.style.gridRow = `span ${scale}`;
+          cell.style.display = ""; // Asegura que el principal esté visible
+        }
+      }
+      attempts--;
+    }
+  });
+
+  // Al final, asegúrate que todos los cuadros que no fueron usados estén visibles y con span 1x1
+  for (let row = 0; row < gridHeight; row++) {
+    for (let col = 0; col < gridWidth; col++) {
+      if (!used[row][col]) {
+        const cell = gridContainer.querySelector(`.cell[data-row='${row}'][data-col='${col}']`);
+        if (cell) {
+          cell.style.display = "";
+          cell.style.gridColumn = "span 1";
+          cell.style.gridRow = "span 1";
+        }
+      }
+    }
+  }
+
+  saveState();
+}
+</script>
+</body>
+</html>
